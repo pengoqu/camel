@@ -14,54 +14,117 @@ import com.kingdee.jdbc.rowset.IRowSet;
 import com.kingdee.util.db.SQLUtils;
 
 public final class CADbUtils {
+	private static Logger logger = Logger.getLogger(CADbUtils.class);
+	private static final int MAX_DATA_ROW = 8000;
 	
 	/**
-	 * <p>批量更新</p>
-	 * note that :<br/>
-	 * sql中的?必须和records包含的list集合数量保持一致,  并且为一一对应关系.
+	 * 
+	 * 描述：使用批量执行方式执行sql，获取更好的性能
 	 * 
 	 * @param ctx
 	 * @param sql
-	 * @param records 行记录
+	 *            将要执行的sql语句
+	 * @param paramsList
+	 *            sql参数集合｛Object[]...｝
 	 * @throws BOSException
-	 * @throws EASBizException
 	 */
-	public static void executeBatch(Context ctx, String sql, List records) throws BOSException, 
-			EASBizException {
-		Connection cn = null;
+	public static void executeBatch(Context ctx, String sql, Collection<Object[]> paramsList) throws BOSException {
+		Connection conn = null;
 		PreparedStatement ps = null;
-		
-		try {
-			cn = EJBFactory.getConnection(ctx);
-			ps = cn.prepareStatement(sql);
-			List[] lists = (List[])records.toArray(new List[0]);
+
+		try
+		{
+			conn = EJBFactory.getConnection(ctx);
+			ps = conn.prepareStatement(sql);
+
+			Object[] params = null;
+			int k = 1;
+			boolean flag = false;
+			Iterator<Object[]> iter = paramsList.iterator();
 			
-			for(int i = 0,length = lists.length;i < length;i++){
-				Object[] params = getUpdateValues(lists[i]);
-				for(int k = 0,size = params.length; k<size; k++){
-					if(params[k] == null)
-						ps.setString(k+1,(String) params[k]);
-					else{
-						ps.setObject(k+1, params[k]);
+			int count = 0;
+			while (iter.hasNext()) {
+				params = iter.next();
+				for (int j = 0; j < params.length; j++)
+				{
+					if (params[j] != null)
+					{
+						ps.setObject(j + 1, params[j]);
+					} else
+					{
+						ps.setNull(j + 1, Types.VARCHAR);
 					}
 				}
 				ps.addBatch();
+				count++;
+				
+				if (count == k * MAX_DATA_ROW)
+				{
+					flag = true;
+				}
+				if (count > k * MAX_DATA_ROW && flag)
+				{
+					ps.executeBatch();
+					k++;
+					flag = false;
+					ps.clearBatch();
+				}
 			}
-			ps.executeBatch();
-		} catch (SQLException e) {
-			throw new BOSException(e);
-		} finally {
-			SQLUtils.cleanup(ps, cn);
-			records.clear();
+
+			if (!flag)
+			{
+				ps.executeBatch();
+			}
+		} catch (SQLException exc)
+		{
+			logger.error(sql,exc);
+			throw new BOSException("Sql222 execute exception : " + sql, exc);
+		} finally
+		{
+			SQLUtils.cleanup(ps, conn);
 		}
 	}
+	 
+	/**
+	 * 
+	 * 描述：使用批量执行方式执行sql，获取更好的性能
+	 * 
+	 * @param ctx
+	 * @param sql
+	 *            将要执行的sql语句
+	 * @param paramsList
+	 *            sql参数集合｛Object[]...｝
+	 * @throws BOSException
+	 * @see {@link #executeBatch(Context, String, Collection)}
+	 */
+	public static void executeBatch(Context ctx, String sql, List<Object[]> paramsList) throws BOSException {
+		executeBatch(ctx, sql, (Collection<Object[]>)paramsList);
+	}
 	
-	private static Object[] getUpdateValues(List list) {
-		Object[] params = new Object[list.size()];
-		for (int i = 0, size = list.size(); i < size; i++) {
-			params[i] = list.get(i);
+	/**
+	 * 使用制定的列创建临时表，并使用 columnValueColl 值集合给列赋值.
+	 * 
+	 * @param ctx
+	 * @param columnValueColl  列值
+	 * @param columnKey  列名
+	 * @return  临时表名称
+	 * @throws BOSException
+	 * @see HRTableTools
+	 */
+	public static String createTempTableForSpecifiedColumn(Context ctx,
+			Collection<Object[]> columnValueColl, String columnKey) throws BOSException {
+		String sql = " create TABLE aa (" + columnKey + " varchar(44) not null primary key) ";
+		String temporaryTableName = null;
+		try {
+			temporaryTableName = TempTablePool.getInstance(ctx).createTempTable(sql);
+		} catch (Exception e) {
+			throw new BOSException();
 		}
-		return params;
+		StringBuffer sb = new StringBuffer(512);
+		sb.append(" INSERT INTO ").append(temporaryTableName)
+			.append("(" + columnKey + ")VALUES (?)");
+		executeBatch(ctx, sql, columnValueColl);
+		return temporaryTableName;
 	}
 	
 	/**
